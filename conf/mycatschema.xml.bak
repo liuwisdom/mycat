@@ -1,0 +1,285 @@
+<?xml version="1.0"?>
+<!DOCTYPE mycat:schema SYSTEM "schema.dtd">
+<mycat:schema xmlns:mycat="http://org.opencloudb/">
+
+<!--
+schema标签
+	schema name="TESTDB" ：TESTDB代表的是逻辑库（由多个物理库组成）数据分布式存储在物理库的表中。
+
+	checkSQLschema：当该值为true时，例如我们执行语句select * from TESTDB.company 。mycat会把语句修改为 select * from company 去掉TESTDB
+
+	sqlMaxLimit：当该值设置为某个数值时。每条执行的SQL语句，如果没有加上limit语句，MyCat也会自动的加上所对应的值。需要注意的是，如果运行的schema为非拆分库的，那么该属性不会生效。需要自己sql语句加limit。MyCAT的1.4版本里面，用户的Limit参数会覆盖掉默认的MyCAT设置 
+
+
+
+table标签
+	table标签共有九个属性:
+	(1).name：对应Mysql中的表名
+	(2).dataNode：逻辑表所在的分片，该属性值需要和dataNode标签的name属性对应，dateNode标签下面会讲解
+	(3).rule：逻辑表使用的分片规则名称，规则在conf/rule.xml中配置，该属性值必须与tableRule标签中的name属性对应
+	(4).ruleRequired：是否绑定分片规则，如果为true的话，就一定要配置rule
+	(5).primaryKey：逻辑表对应真实表的主键
+	(6).type：逻辑表类型，分为全局表和普通表，后面写例子时再详细说明该属性
+	(7).autoIncrement：是否启用自增主键，对应Mysql自增主键，默认时禁用的
+	(8).needAddLimit：是否允许自动添加schema标签中设置的limit，默认为true，你也可以设置成false`禁用掉默认行为。
+
+
+
+	table name="travelrecord" ：travelrecord代表逻辑表 这个名字就如同我在数据库中执行create table命令指定的名字一样，同个schema标签中定义的名字必须唯一。
+
+	dataNode：该属性用于绑定具体的database到逻辑库上。
+
+	rule="auto-sharding-long"：该属性用于指定逻辑表要使用的规则名字，规则名字在rule.xml中定义，必须与rule.xml中的tableRule标签中name属性属性值一一对应。
+
+	primaryKey：该逻辑表对应真实表的主键。
+
+	type="global"该属性定义了逻辑表的类型，目前逻辑表只有“全局表”和”普通表”两种类型。对应的配置：全局表：global。普通表：不指定该值为globla的所有表。在分片的情况下，当业务表因为规模而进行分片以后，业务表与这些附属的字典表之间的关联，就成了比较棘手的问题，考虑到字典表具有以下几个特性：
+    1. 变动不频繁
+    2 数据量总体变化不大
+    3. 数据规模不大，很少有超过数十万条记录。
+
+	鉴于此，MyCAT 定义了一种特殊的表，称之为“全局表”，全局表具有以下特性：
+    1. 全局表的插入、更新操作会实时在所有节点上执行，保持各个分片的数据一致性
+    2.全局表的查询操作，只从一个节点获取
+    3. 全局表可以跟任何一个表进行 JOIN 操作
+	MyCAT 可以满足 80%以上的企业应用开发。全局表有点类似于RAID 1，写的时候多份写入，读的时候从任意节点读取即可。
+	使用方法：全局表配置比较简单，不用写 Rule 规则，修改schema.xml，如下配置即可：需要注意的是，全局表每个分片节点上都会运行创建表的 DDL 语句。
+
+	autoIncrement：MySQL对非自增长主键，使用last_insert_id()是不会返回结果的，只会返回0。所以，只有定义了自增长主键的表才可以用last_insert_id()返回主键值。mycat目前提供了自增长主键功能，但是如果对应的mysql节点上数据表，没有定义auto_increment，那么在mycat层调用last_insert_id()也是不会返回结果的。由于insert操作的时候没有带入分片键，mycat会先取下这个表对应的全局序列，然后赋值给分片键。这样才能正常的插入到数据库中，最后使用last_insert_id()才会返回插入的分片键值。如果要使用这个功能最好配合使用数据库模式的全局序列。使用autoIncrement=“true” 指定这个表有使用自增长主键，这样mycat才会不抛出分片键找不到的异常。使用autoIncrement=“false” 来禁用这个功能，当然你也可以直接删除掉这个属性。默认就是禁用的。
+
+
+
+childTable标签
+	childTable标签用于定义E-R分片的子表。通过标签上的属性与父表进行关联。有一类业务，例如订单（ORDER）跟订单明细表（ORDER_DETAIL）,明细表会依赖二订单，就是该会存在表的主从关系，这类似业务的切分可以抽象出合适的切分规则，比如根据用户ID切分,其它相关的表都依赖于用户ID，再或者根据订单ID进行切分，总之部分业务总会可以抽象出父子关系的表。这类表适用于ER分片表，子表的记录与所关联的父表记录存放在同一个数据分片上，避免数据Join跨库操作，以order与order_detail例子为例，schema.xml中定义合适的分片配置,order,order_detail 根据order_id进行数据切分，保证相同order_id的数据分到同一个分片上，在进行数据插入操作时，Mycat会获取order所在的分片，然后将order_detail也插入到order所在的分片。
+
+
+	name：定义子表的表名。
+
+	joinKey：插入子表的时候会使用这个列的值查找父表存储的数据节点。
+
+	parentKey：指定的值一般为与父表建立关联关系的列名。程序首先获取joinkey的值，再通过**parentKey**属性指定的列名产生查询语句，通过执行该语句得到父表存储在哪个分片上。从而确定子表存储的位置。
+
+	primaryKey：同table标签所描述的。
+
+	needAddLimit：同table标签所描述的。
+
+
+
+
+dataNode标签
+	dataNode 标签定义了MyCat中的数据节点，也就是我们通常说所的数据分片。一个**dataNode** 标签就是一个独立的数据分片。例子中所表述的意思为：使用名字为lch3307数据库实例上的db1物理数据库，这就组成一个数据分片，最后，我们使用名字dn1标识这个分片。
+	name属性
+	 定义数据节点的名字，这个名字需要是唯一的，我们需要在table标签上应用这个名字，来建立表与分片对应的关系。
+
+	dataHost属性 
+	 是引用dataHost标签上定义的name属性。
+	database属性
+    database是指数据库
+
+
+
+dataHost标签
+	作为Schema.xml中直接定义了具体的数据库实例、读写分离配置和心跳语句，解析下这个标签：
+	name属性
+	唯一标识dataHost标签，供上层的标签使用。
+
+	maxCon属性
+	指定每个读写实例连接池的最大连接。
+
+	minCon属性
+	指定每个读写实例连接池的最小连接。
+
+	balance属性
+	负载均衡类型，目前的取值有4种：  
+
+	1. balance="0", 不开启读写分离机制，所有读操作都发送到当前可用的writeHost上。
+
+	2. balance="1"，所有读操作都随机的发送到readHost。全部的readHost与stand by writeHost参与select语句的负载均衡，简单的说，当双主双从模式(M1->S1，M2->S2，并且M1与 M2互为主备)，正常情况下，M2,S1,S2都参与select语句的负载均衡。
+
+	3. balance="2"，所有读操作都随机的在writeHost、readhost上分发。
+
+	4. balance="3"，所有读请求随机的分发到wiriterHost对应的readhost执行，writerHost不负担读压力
+
+
+	writeType属性
+	writeType属性负载均衡类型，目前的取值有3种：
+
+	1.writeType="0", 所有写操作发送到配置的第一个writeHost，第一个挂了切到还生存的第二个writeHost，重新启动后已切换后的为准，切换记录在配置文件中:dnindex.properties.
+
+	2.writeType="1"，所有写操作都随机的发送到配置的writeHost，1.5以后废弃不推荐。
+
+	3.writeType="2"，不执行写操作
+
+	switchType指的是切换的模式，目前的取值也有4种：
+
+	1. switchType='-1' 表示不自动切换
+
+	2. switchType='1' 默认值，表示自动切换
+
+	3. switchType='2' 基于MySQL主从同步的状态决定是否切换,心跳语句为 show slave status
+
+	4. switchType='3'基于MySQL galary cluster的切换机制（适合集群）（1.4.1），心跳语句为 show status like 'wsrep%'。
+
+
+	dbType属性
+	指定后端连接的数据库类型，目前支持二进制的mysql协议，还有其他使用JDBC连接的数据库。例如：MongoDB、Oracle、Spark等。
+	
+	dbDriver属性
+	指定连接后端数据库使用的Driver，目前可选的值有native和JDBC。使用native的话，因为这个值执行的是二进制的mysql协议，所以可以使用mysql和maridb。其他类型的数据库则需要使用JDBC驱动来支持。如果使用JDBC的话需要将符合JDBC 4标准的驱动JAR包放到MYCAT\lib目录下，并检查驱动JAR包中包括如下目录结构的文件：META-INF\services\java.sql.Driver。在这个文件内写上具体的Driver类名，例如：com.mysql.jdbc.Driver。
+
+	
+
+heartbeat标签
+	这个标签内指明用于和后端数据库进行心跳检查的语句。例如,MYSQL可以使用select user()，oracle可以使用select 1 from dual等。这个标签还有一个connectionInitSql属性，主要是当使用Oracla数据库时，需要执行的初始化SQL语句就这个放到这里面来。例如：alter session set nls_date_format='yyyy-mm-dd hh24:mi:ss'
+
+
+
+
+writeHost标签、readHost标签
+	writeHost指定写实例、readHost指定读实例，组着这些读写实例来满足系统的要求。在一个dataHost内可以定义多个writeHost和readHost。但是，如果writeHost指定的后端数据库宕机，那么这个writeHost绑定的所有readHost都将不可用。
+
+	host属性
+	用于标识不同实例，一般writeHost我们使用*M1，readHost我们用*S1。schema中的每一个dataHost的host属性值必须唯一，否则会出现主从在所有dataHost中全部切换的现象 -->
+
+
+
+
+
+
+	<!-- 翻译：在mycat中创建一个逻辑库名称是TESTDB（一般大写）不自动去除逻辑库名 用户不指定limit时最多返回100条数据-->
+	<schema name="TESTDB" checkSQLschema="false" sqlMaxLimit="100">
+
+		<!-- 翻译：在mycat中创建名为 travelrecord的普通表 表的数据按照auto-sharding-long分片规则（指定了对哪个字段进行分片）把数据分布存储在dn1,dn2,dn3对应的物理库的中的travelrecord表中，此时在mycat中创建travelrecord表的时候会在db1，db2，db3库中分别创建travelrecord表-->
+		<table name="travelrecord" dataNode="dn1,dn2,dn3" rule="auto-sharding-long" />
+
+		<!-- 翻译：在mycat中创建名为company的全局表，主键是ID，该全局表分别在db1，db2，db3（注意是db不是dn)创建company表，并且当插入数据时三个db库的三张表都会插入相同的数据，读取时任意一张表都行，并且该表可以和任何表进行join-->
+		<table name="company" primaryKey="ID" type="global" dataNode="dn1,dn2,dn3" />
+
+		<!-- 翻译：在mycat中创建名为 dual的全局表，主键是ID，该全局表会在dnx，和dnoracle2对应的区里库中创建dual表 此时的nx,dnoracle2是用户自定义的数据节点，并且禁用掉最多返回100条数据也就是返回所有数据禁用了limit-->
+		<table name="dual" primaryKey="ID" dataNode="dnx,dnoracle2" type="global" needAddLimit="false"/> 
+
+		<!-- 翻译：在mycat中创建名为goods的全局表，主键是ID，该全局表分别在db1，db2（注意是db不是dn)创建goods表，并且当插入数据时2个db库的2张表都会插入相同的数据，读取时任意一张表都行，并且该表可以和任何表进行join-->
+		<table name="goods" primaryKey="ID" type="global" dataNode="dn1,dn2" />
+
+		<!-- 翻译：在mycat中创建名为 hotnews表，主键是ID，表的数据按照mod-long分片规则把数据分布存储在dn1,dn2,dn3对应的物理库的中的mod-long表中，此时在mycat中创建hotnews表的时候会在db1，db2，db3库中分别创建hotnews表-->
+		<table name="hotnews" primaryKey="ID" dataNode="dn1,dn2,dn3" rule="mod-long" />
+		
+		<!-- 翻译：在mycat中创建名为 worker表，主键是ID，表的数据按照mod-long分片规则把数据分布存储在jdbc_dn1,jdbc_dn2,jdbc_dn33对应的物理库的中的mod-long表中，此时在mycat中创建workers表的时候会在jdbc_dn1,jdbc_dn2,jdbc_dn3库中分别创建worker表 jdbc_dn1,jdbc_dn2,jdbc_dn33是用户自定义的数据节点-->	
+		<table name="worker" primaryKey="ID" dataNode="jdbc_dn1,jdbc_dn2,jdbc_dn3" rule="mod-long" /> 
+
+		<!-- 翻译：在mycat中创建名为 employee表，主键是ID，表的数据按照sharding-by-intfile分片规则把数据分布存储在dn1,dn2对应的物理库的中的mod-long表中，此时在mycat中创建employee表的时候会在db1，db2库中分别创建employee表-->
+		<table name="employee" primaryKey="ID" dataNode="dn1,dn2" rule="sharding-by-intfile" />
+
+		<!-- 翻译：在mycat中创建名为 customer表，主键是customer_id，表的数据按照sharding-by-intfile分片规则把数据分布存储在dn1,dn2对应的物理库的中的mod-long表中，此时在mycat中创建customer表的时候会在db1，db2库中分别创建customer表-->
+		<!--用户表（customer），订单表（orders）。购物项表（order_items），用户收货地址表（customer_addr）这四张表之间有相互的关联
+		比如customer和orders通过外键customer_id关联，orders和order_items通过order_id关联,customer和customer_addr又通过customer_id关联  案例比如当新增加一个用户时mycat会根据sharding-by-intfile这个分片规则把该用户分在某个库中的customer表（父表）中，当用户产生了一个订单，mycat要插入订单数据到订单表orders（子表）时，订单表joinKey customer_id会按照用户表parentKey customer_id的分片规则进行分片这样就保证了用户表，订单表有相同的customer_id时会被分在相同的片上从而避免了join时垮库查询-->
+		<table name="customer" primaryKey="customer_id" dataNode="dn1,dn2" rule="sharding-by-intfile">
+			<!--翻译 order_items（子表）和orders（父表）相同的order_id时会在同一个片下  -->
+			<childTable name="orders" primaryKey="order_id" joinKey="customer_id" parentKey="customer_id">
+				<childTable name="order_items" joinKey="order_id" parentKey="order_id" />
+			</childTable>
+			<!--翻译 案例比如当新增加一个用户时mycat会根据sharding-by-intfile这个分片规则把该用户分在某个库中的customer表（父表）中，当用户填写地址信息时，mycat要插入地址数据到地址表customer_addr（子表）时，地址表joinKey customer_id会按照用户表parentKey customer_id的分片规则进行分片这样就保证了用户表，地址表有相同的customer_id时会被分在相同的片上从而避免了join时垮库查询-->
+			<childTable name="customer_addr" primaryKey="customer_addr_id" joinKey="customer_id" parentKey="customer_id" />
+		</table>
+
+
+		<!-- <table name="oc_call" primaryKey="ID" dataNode="dn1$0-743" rule="latest-month-calldate" 
+			/> -->
+	</schema>
+
+	<!-- <dataNode name="dn1$0-743" dataHost="localhost1" database="db$0-743" /> -->
+	<!--翻译 定义一个数据节点 节点名称是dn1（此时的dn1仅仅是一个名字一个引用可以自定义的）该数据节点对应的数据库实例是localhost1（此时的localhost1可以自定义只要和<dataHost name="localhost1"的name相同就行）并且该数据节点的物理库的名称是db1（此时MySQL 中药创建一个名称为db1的数据库） -->
+	<dataNode name="dn1" dataHost="localhost1" database="db1" />
+	<dataNode name="dn2" dataHost="localhost1" database="db2" />
+	<dataNode name="dn3" dataHost="localhost1" database="db3" />
+	<!--<dataNode name="dn4" dataHost="sequoiadb1" database="SAMPLE" />
+	 <dataNode name="jdbc_dn1" dataHost="jdbchost" database="db1" /> 
+	<dataNode	name="jdbc_dn2" dataHost="jdbchost" database="db2" /> 
+	<dataNode name="jdbc_dn3" 	dataHost="jdbchost" database="db3" /> -->
+
+	<!-- 翻译 数据库实例名称是localhost1 连接该实例的数据库连接池最大连接是1000最小的连接数是10，不开启负载和读写分离即所有的读写操作都经过writeHost（当balance="0"时不需要配置<writeHost host="hostS1" 可配置多个<writeHost host="hostM1" ），writeType="0"- 读写操作优先使用第一个writehost 第一个挂了才采用下一个可用的writehost ，并且这种切换方式是自动切换（switchType="1"）数据库支持类型是MySQL，使用的驱动是内置的驱动（native和JDBC,当为JDBC时需要注意）ps-以下是两主写一从写模式-->
+	<dataHost name="localhost1" maxCon="1000" minCon="10" balance="0"
+		writeType="0" dbType="mysql" dbDriver="native" switchType="1"  slaveThreshold="100">
+
+		<!--翻译 心跳监听这里主要是主从及负载均衡使用 MySQL的心跳监听就是select user()-->
+		<heartbeat>select user()</heartbeat>
+		<!--翻译 创建数据库写实例  该实例负责主写操作（host="hostM1"） -->
+		<writeHost host="hostM1" url="IP:3306" user="root" password="123456">
+			<!-- can have multi read hosts -->
+		</writeHost>
+
+		<!--翻译 创建数据库写实例  该实例负责从写操作（host="hostS1"） -->
+		<writeHost host="hostS1" url="localhost:3316" user="root" password="123456" />
+
+		<!--翻译 创建数据库写实例  该实例负责主写操作（host="hostM1"） -->
+		<writeHost host="hostM2" url="localhost:3316" user="root" password="123456"/> 
+	</dataHost>
+	<!--mysql数据库实例jdbc模式-->
+     <dataHost name="jdbchost" maxCon="1000" minCon="10" balance="0" dbType="mysql"  dbDriver="jdbc">
+		<heartbeat>select user()</heartbeat> 
+		<writeHost host="hostM1" 
+		url="jdbc:mysql://localhost:3306" user="root" password="123456"/> 
+	</dataHost> 
+
+	
+	<dataHost name="sequoiadb1" maxCon="1000" minCon="1" balance="0" dbType="sequoiadb" dbDriver="jdbc"> 
+		 <heartbeat> 		</heartbeat>
+		 <writeHost host="hostM1" url="sequoiadb://1426587161.dbaas.sequoialab.net:11920/SAMPLE" user="jifeng" 	password="jifeng"></writeHost> 
+	</dataHost>
+		 
+	<!--oracle 数据库实例设置模式 -->	 		
+	<dataHost name="oracle1" maxCon="1000" minCon="1" balance="0" writeType="0" 	dbType="oracle" dbDriver="jdbc"> 
+			<heartbeat>select 1 from dual</heartbeat> 
+			<connectionInitSql>alter session set nls_date_format='yyyy-mm-dd hh24:mi:ss'</connectionInitSql> 
+			<writeHost host="hostM1" url="jdbc:oracle:thin:@127.0.0.1:1521:nange" user="base" 	password="123456" > </writeHost> 
+    </dataHost> 
+
+	<!--mongodb 数据库实例设置模式 -->	
+	<dataHost name="jdbchost" maxCon="1000" 	minCon="1" balance="0" writeType="0" dbType="mongodb" dbDriver="jdbc"> 
+		<heartbeat>select 	user()</heartbeat> 
+		<writeHost host="hostM" url="mongodb://192.168.0.99/test" user="admin" password="123456" ></writeHost> 
+	</dataHost> 
+
+	<!--spark数据库实例设置模式 -->	
+	<dataHost name="sparksql" maxCon="1000" minCon="1" balance="0" dbType="spark" dbDriver="jdbc"> 
+		<heartbeat> </heartbeat>
+		 <writeHost host="hostM1" url="jdbc:hive2://feng01:10000" user="jifeng" 	password="jifeng"></writeHost> 
+	</dataHost>
+
+	
+<!---简单应用复制直接可用 创建三个库DB11，DB33，DB33，
+	
+	
+		<schema name="LEGO" checkSQLschema="false" sqlMaxLimit="100">
+		
+		<table name="testbiao" dataNode="dn1,dn2,dn3" rule="auto-sharding-long" />
+		
+		
+	</schema>
+	
+	<dataNode name="dn1" dataHost="localhost1" database="DB11" />
+	<dataNode name="dn2" dataHost="localhost1" database="DB22" />
+	<dataNode name="dn3" dataHost="localhost1" database="DB33" />
+	
+	<dataHost name="localhost1" maxCon="1000" minCon="10" balance="0"
+		writeType="0" dbType="mysql" dbDriver="native" switchType="1"  slaveThreshold="100">
+		<heartbeat>select user()</heartbeat>
+		
+		<writeHost host="hostM1" url="192.168.xxx.xxx:3306" user="用户名"
+			password="密码">
+		</writeHost>
+		
+	</dataHost> 
+	
+	
+	mycat 读写分离，垂直切分，水平切分，以及自定义切分规则配置及代码实现详见链接
+	https://segmentfault.com/a/1190000010208682
+	
+	
+	
+	-->
+	
+	
+	
+
+</mycat:schema>

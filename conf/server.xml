@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- - - Licensed under the Apache License, Version 2.0 (the "License"); 
+	- you may not use this file except in compliance with the License. - You 
+	may obtain a copy of the License at - - http://www.apache.org/licenses/LICENSE-2.0 
+	- - Unless required by applicable law or agreed to in writing, software - 
+	distributed under the License is distributed on an "AS IS" BASIS, - WITHOUT 
+	WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. - See the 
+	License for the specific language governing permissions and - limitations 
+	under the License. -->
+<!DOCTYPE mycat:server SYSTEM "server.dtd">
+<mycat:server xmlns:mycat="http://org.opencloudb/">
+<!--
+server.xml 几乎保存了所有 mycat 需要的系统配置信息。其在代码内直接的映射类为 SystemConfig 类。
+
+system property标签
+	defaultSqlParser 属性:由于 mycat 最初是时候 Foundation DB 的 sql 解析器，而后才添加的 Druid 的解析器。所以这个属性用来指定默认的解析器。目前的可用的取值有：druidparser 和 fdbparser。使用的时候可以选择其中的一种，目前一般都使用 druidparser。1.3 解析器默认为 fdbparser，1.4 默认为 druidparser，1.4 以后 fdbparser 作废。
+
+	processors 属性:这个属性主要用于指定系统可用的线程数，默认值为机器 CPU 核心线程数。主要影响 processorBufferPool、 processorBufferLocalPercent，processorExecutor 属性。NIOProcessor 的个数也是由这个属性定义的，所以调优的时候可以适当的调高这个属性
+	
+	processorBufferChunk 属性:这个属性指定每次分配 Socket Direct Buffer 的大小，默认是 4096 个字节。这个属性也影响 buffer pool 的长度。如果一次性获取的数过大 buffer 不够用 经常出现警告，则可以适当调大.
+	
+	processorBufferPool 属性:这个属性指定 bufferPool 计算比例值。由于每次执行 NIO 读、写操作都需要使用到 buffer，系统初始化的时候会建立一定长度的 buffer 池来加快读、写的效率，减少建立 buffer 的时间。
+	Mycat 中有两个主要的 buffer 池:
+	- BufferPool
+	- ThreadLocalPool
+	BufferPool 由 ThreadLocalPool 组合而成，每次从 BufferPool 中获取 buffer 都会优先获取ThreadLocalPool 中的 buffer，未命中之后才会去获取 BufferPool 中的 buffer。也就是说 ThreadLocalPool 是作为 BufferPool 的二级缓存，每个线程内部自己使用的。当然，这其中还有一些限制条件需要线程的名字是由$_开头。然而，BufferPool 上的 buffer 则是每个 NIOProcessor 都共享的。        
+		默认这个属性的值为：默认 bufferChunkSize(4096) * processors 属性 * 1000       
+		BufferPool 的总长度 = bufferPool / bufferChunk。        
+		若 bufferPool 不是 bufferChunk 的整数倍，则总长度为前面计算得出的商 + 1        
+		假设系统线程数为 4，其他都为属性的默认值，则:bufferPool ＝ 4096 * 4 * 1000       
+		BufferPool 的总长度 : 4000 = 16384000 / 4096
+
+
+	processorBufferLocalPercent 属性:前面提到了 ThreadLocalPool。这个属性就是用来控制分配这个 pool 的大小用的，但其也并不是一个准确的值，也是一个比例值。这个属性默认值为 100。
+	线程缓存百分比 = bufferLocalPercent / processors 属性。例如，系统可以同时运行 4 个线程，使用默认值，则根据公式每个线程的百分比为 25。最后根据这个百分比来计算出具体的 ThreadLocalPool 的长度公式如下：
+	ThreadLocalPool 的长度 = 线程缓存百分比 * BufferPool 长度 / 100,假设 BufferPool 的长度为 4000，其他保持默认值。那么最后每个线程建立上的 ThreadLocalPool 的长度为： 1000 = 25 * 4000 / 100
+
+	processorExecutor 属性:这个属性主要用于指定 NIOProcessor 上共享的 businessExecutor 固定线程池大小。 mycat 在需要处理一些异步逻辑的时候会把任务提交到这个线程池中。新版本中这个连接池的使用频率不是很大了，可以设置一个较小的值。
+	
+	sequnceHandlerType 属性:指定使用 Mycat 全局序列的类型。 0 为本地文件方式，1 为数据库方式，2 为时间戳序列方式，3 为分布式ZK ID 生成器，4 为 zk 递增 id 生成。从 1.6 增加 两种 ZK 的全局 ID 生成算法。
+	
+	TCP 连接相关属性:StandardSocketOptions.SO_RCVBUFStandardSocketOptions.SO_SNDBUFStandardSocketOptions.TCP_NODELAY
+	以上这三个属性，分别由：
+	frontSocketSoRcvbuf 默认值： 1024 * 1024
+	frontSocketSoSndbuf 默认值： 4 * 1024 * 1024
+	frontSocketNoDelay 默认值： 1
+	backSocketSoRcvbuf 默认值： 4 * 1024 * 1024
+	backSocketSoSndbuf 默认值： 1024 * 1024
+	backSocketNoDelay 默认值： 1
+	各自设置前后端 TCP 连接参数。
+	Mycat 在每次建立前、后端连接的时候都会使用这些参数初始化连接。可以按系统要求适当的调整这些 buffer 的大小。 
+	TCP 连接参数的定义，可以查看 Javadoc
+	
+	Mysql 连接相关属性:
+	初始化 mysql 前后端连接所涉及到的一些属性：
+	packetHeaderSize : 指定 Mysql 协议中的报文头长度。默认 4。
+	maxPacketSize : 指定 Mysql 协议可以携带的数据最大长度。默认 16M。
+	idleTimeout : 指定连接的空闲超时时间。某连接在发起空闲检查下，发现距离上次使用超过了空闲时间，那么这个连接会被回收，就是被直接的关闭掉。默认 30 分钟，单位毫秒。
+	charset : 连接的初始化字符集。默认为 utf8。
+	txIsolation : 前端连接的初始化事务隔离级别，只在初始化的时候使用，后续会根据客户端传递过来的属性对后端数据库连接进行同步。默认为 REPEATED_READ，设置值为数字默认 3。
+	READ_UNCOMMITTED = 1;READ_COMMITTED = 2;REPEATED_READ = 3;SERIALIZABLE = 4;sqlExecuteTimeout:SQL 执行超时的时间，Mycat 会检查连接上最后一次执行 SQL 的时间，若超过这个时间则会直接关闭这连接。默认时间为 300 秒，单位秒
+
+	心跳属性:mycat 中有几个周期性的任务来异步的处理一些我需要的工作。这些属性就在系统调优的过程中也是比不可少的。
+
+	processorCheckPeriod : 清理 NIOProcessor 上前后端空闲、超时和关闭连接的间隔时间。默认是 1 秒，单位毫秒。
+	dataNodeIdleCheckPeriod : 对后端连接进行空闲、超时检查的时间间隔，默认是 300 秒，单位毫秒。
+	dataNodeHeartbeatPeriod : 对后端所有读、写库发起心跳的间隔时间，默认是 10 秒，单位毫秒。服务相关属性:这里介绍一个与服务相关的属性，主要会影响外部系统对 myact 的感知。
+	bindIp : mycat 服务监听的 IP 地址，默认值为 0.0.0.0。
+	serverPort : 定义 mycat 的使用端口，默认值为 8066。
+	managerPort : 定义 mycat 的管理端口，默认值为 9066.
+
+
+
+user标签：
+
+	schemas属性
+	修改schemas内的文本来控制用户可放问的 schema；修改schemas内的文本来控制用户可访问的 schema，同时访问多个 schema 的话使用,隔开，例如:
+    <property name="schemas">TESTDB,db1,db2<property>
+
+
+	Benchmark 属性:
+	Benchmark:mycat连接服务降级处理：benchmark基准,当前端的整体connection数达到基准值是,对来自该账户的请求开始拒绝连接，0或不设表示不限制
+
+	usingDecrypt 属性:
+    是否对密码加密默认 0 否 如需要开启配置 1，同时使用加密程序对密码加密，加密命令为：执行 mycat jar 程序：java -cp Mycat-server-1.4.1-dev.jar org.opencloudb.util.DecryptUtil 0:user:password
+	Mycat-server-1.4.1-dev.jar 为 mycat download 下载目录的 jar
+	1:host:user:password 中 0 为前端加密标志
+
+	privileges 子节点:
+	对用户的 schema 及 下级的 table 进行精细化的 DML 权限控制，privileges 节点中的 check 属性是用于标识是否开启 DML 权限检查， 默认 false 标识不检查，当然 privileges 节点不配置，等同 check=false,由于 Mycat 一个用户的 schemas 属性可配置多个 schema ，所以 privileges 的下级节点 schema 节点同样可配置多个，对多库多表进行细粒度的 DML 权限控制。privileges 配置事例如下：
+	<privileges check="true">
+		<schema name="TESTDB" dml="0010">
+			<table name="table01" dml="0111"></table>
+			<table name="table02" dml="0101"></table>
+		</schema>
+	</privileges>
+	 dml 属性描述：
+	insert，update，select，delete
+	例如：0000：禁止插入修改查询删除
+
+-->
+	<system>
+			<!--设置字符集-->
+			<property name="charset">utf8</property>
+
+			<!--默认SQL解析器-->
+			<property name="defaultSqlParser">druidparser</property>
+
+			<!--1为开启mysql压缩协议-->
+			<property name="useCompression">1</property> 
+
+			<!--这个属性指定每次分配 Socket Direct Buffer 的大小，默认是 4096 个字节，若获取数据过大可适当调大-->
+			<property name="processorBufferChunk">40960</property>
+
+			<!--主要用于指定系统可用的线程数，默认值为机器 CPU 核心线程数 所以调优的时候可以适当的调高这个属性
+	-->
+			<property name="processors">1</property> 
+
+			<!--这个属性主要用于指定 NIOProcessor 上共享的 businessExecutor 固定线程池大小，新版本中这个连接池的使用频率不是很大了，可以设置一个较小的值。-->
+			<property name="processorExecutor">32</property> 
+			
+			<!--默认是65535 64K 用于sql解析时最大文本长度 -->
+			<property name="maxStringLiteralLength">65535</property>
+
+			<!--指定使用 Mycat 全局序列的类型。0 为本地文件方式，1 为数据库方式，2 为时间戳序列方式，3 为分布式ZK ID 生成器，4 为 zk 递增 id 生成。-->
+			<property name="sequnceHandlerType">0</property>
+
+			<!--设置字符集-->
+			<property name="backSocketNoDelay">1</property>
+
+			<!--设置字符集-->
+			<property name="frontSocketNoDelay">1</property>
+
+			<!-- 0：开启小数量级（默认） ；1：开启亿级数据排序-->
+			<property name="mutiNodeLimitType">1</property>
+
+			<!-- 亿级数量排序批量-->
+			<property name="mutiNodePatchSize">100</property> 
+
+			<!--定义 mycat 的使用端口，默认值为 8066。-->
+			<property name="serverPort">8066</property> 
+
+			<!--定义 mycat 的管理端口，默认值为 9066-->
+			<property name="managerPort">9066</property>
+
+			<!--指定连接的空闲超时时间。默认 30 分钟，单位毫秒。-->
+			<property name="idleTimeout">300000</property> 
+
+			<!--mycat 服务监听的 IP 地址-->
+			<property name="bindIp">0.0.0.0</property> 
+
+			
+			<property name="frontWriteQueueSize">4096</property> 
+
+			
+	</system>
+
+
+	<!--mycat 用户 可设置多个 下面的就是test用户-->
+	<user name="test">
+		<!--用户密码-->
+		<property name="password">test</property>
+		<!--用户可操作的逻辑库，可改变文本内容操作多个schema（在schema。xml可设置多个sehema标签）-->
+		<property name="schemas">TESTDB</property>
+		<!--用户只读不可写-->
+		<property name="readOnly">true</property>
+		<!--对来自该账户的请求开始拒绝连接，0或不设表示不限制-->
+		<property name="benchmark">11111</property>
+		<!--是否对密码加密默认 0 否 如需要开启配置 1，-->
+		<proerty name="usingDecrypt">1</property>
+		<!--对用户的 schema 及 下级的 table 进行精细化的 DML 权限控制-->
+		<privileges check="false">
+			<schema name="TESTDB" dml="0010" showTables="custome/mysql">
+				<table name="tbl_user" dml="0110"></table>
+				<table name="tbl_dynamic dml="1111"></table>
+			</schema>
+
+			<schema name="TESTDB1" dml="0010" showTables="custome/mysql">
+				<table name="tbl_user1" dml="0110"></table>
+				<table name="tbl_dynamic dml1="1111"></table>
+			</schema>
+		</privileges>
+	</user>
+
+
+
+	<user name="test">
+		<property name="password">test</property>
+		<property name="schemas">TESTDB</property>
+	</user>
+
+
+	<user name="user">
+		<property name="password">user</property>
+		<property name="schemas">TESTDB</property>
+		<property name="readOnly">true</property>
+	</user>
+	
+    <cluster> <node name="cobar1"> <property name="host">127.0.0.1</property> 
+		<property name="weight">1</property> </node>
+    </cluster> 
+
+	<quarantine> 
+		<host name="1.2.3.4"> <property name="user">test</property> </host>
+	</quarantine>
+
+
+
+
+
+	<!---简单应用复制直接可用
+	
+	
+		<system>
+		<property name="defaultSqlParser">druidparser</property>
+		 <property name="charset">utf8</property> 
+		</system>
+		<user name="test">
+			<property name="password">test</property>
+			<property name="schemas">LEGO</property>
+		</user>
+
+		<user name="root">
+			<property name="password">123456</property>
+			<property name="schemas">LEGO</property>
+			
+		</user>
+		
+	
+	
+	-->
+
+</mycat:server>

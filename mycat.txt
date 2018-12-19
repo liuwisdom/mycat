@@ -1,0 +1,73 @@
+1.Linux下解压mycat压缩包
+2.进入mycat/conf
+3.修改schema.xml文件
+4.修改server.xml文件
+5.进入mycat/bin
+6../mycat start 启动mycat
+7.创建schema.xml中指定的物理库（如：DB11，DB22，DB33）
+8.客户端（sqlyong/navicat）连接mycat 注意端口为8066
+9.创建schema.xml中指定的逻辑表（如：testbiao）
+10.插入数据验证分片
+
+
+PS：
+schema.xml文件内容修改为
+<?xml version="1.0"?>
+<!DOCTYPE mycat:schema SYSTEM "schema.dtd">
+<mycat:schema xmlns:mycat="http://org.opencloudb/">
+
+	<schema name="LEGO" checkSQLschema="false" sqlMaxLimit="100">
+		
+		<table name="testbiao" dataNode="dn1,dn2,dn3" rule="auto-sharding-long" />
+		
+	</schema>
+	
+	<dataNode name="dn1" dataHost="localhost1" database="DB11" />
+	<dataNode name="dn2" dataHost="localhost1" database="DB22" />
+	<dataNode name="dn3" dataHost="localhost1" database="DB33" />
+	
+	<dataHost name="localhost1" maxCon="1000" minCon="10" balance="0"
+		writeType="0" dbType="mysql" dbDriver="native" switchType="1"  slaveThreshold="100">
+		<heartbeat>select user()</heartbeat>
+		<!--  user：数据库用户名和password密码 -->
+		<writeHost host="hostM1" url="192.168.xxx.xxx:3306" user="用户名"
+			password="密码">
+			
+
+		</writeHost>
+		
+	</dataHost>
+	
+</mycat:schema>
+
+
+server.xml文件内容修改为
+
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- - - Licensed under the Apache License, Version 2.0 (the "License"); 
+	- you may not use this file except in compliance with the License. - You 
+	may obtain a copy of the License at - - http://www.apache.org/licenses/LICENSE-2.0 
+	- - Unless required by applicable law or agreed to in writing, software - 
+	distributed under the License is distributed on an "AS IS" BASIS, - WITHOUT 
+	WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. - See the 
+	License for the specific language governing permissions and - limitations 
+	under the License. -->
+<!DOCTYPE mycat:server SYSTEM "server.dtd">
+<mycat:server xmlns:mycat="http://org.opencloudb/">
+	<system>
+	<property name="defaultSqlParser">druidparser</property>
+        <property name="charset">utf8</property> 
+	</system>
+	<user name="test">
+		<property name="password">test</property>
+		<property name="schemas">LEGO</property>
+	</user>
+
+	<user name="root"><!--登录mycat的用户名（root）和密码（123456）--->
+		<property name="password">123456</property>
+		<property name="schemas">LEGO</property>
+		
+	</user>
+	
+
+</mycat:server>
